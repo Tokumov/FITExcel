@@ -1,0 +1,1 @@
+/usr/bin/c++  -Wall -pedantic -g -fsanitize=address -g CMakeFiles/BIGHW.dir/test.cpp.o CMakeFiles/BIGHW.dir/CPos.cpp.o -o BIGHW   -L/mnt/c/Users/chean/CLionProjects/BIGHW/./x86_64-linux-gnu  -Wl,-rpath,/mnt/c/Users/chean/CLionProjects/BIGHW/./x86_64-linux-gnu -lexpression_parser 

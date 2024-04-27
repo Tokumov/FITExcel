@@ -1,0 +1,3 @@
+/mnt/c/Users/chean/CLionProjects/BIGHW/cmake-build-debug/CMakeFiles/BIGHW.dir
+/mnt/c/Users/chean/CLionProjects/BIGHW/cmake-build-debug/CMakeFiles/edit_cache.dir
+/mnt/c/Users/chean/CLionProjects/BIGHW/cmake-build-debug/CMakeFiles/rebuild_cache.dir
