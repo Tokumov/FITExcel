@@ -47,59 +47,139 @@ using CValue = variant<monostate, double, string>;
 
 #include "CPos.h"
 #include "ASTTree.h"
+class ASTNode;
+class ASTValueNode;
+class ASTBinaryNode;
 
+using ASTNodePtr = shared_ptr<ASTNode>;
 
-class NumberNode : public ASTTree {
-    double value;
+// Base class for AST nodes
+class ASTNode {
 public:
-    NumberNode(double val) : value(val) {}
-    CValue evaluate(map<CPos, CValue>& cells, const CPos& basePos) const override {
-        return value;
-    }
+    virtual ~ASTNode() = default;
+    virtual CValue evaluate() const = 0;
 };
 
-class StringNode : public ASTTree {
-    string value;
+// AST node for a value (number or string)
+class ASTValueNode : public ASTNode {
+    CValue value;
 public:
-    StringNode(string val) : value(val) {}
-    CValue evaluate(map<CPos, CValue>& cells, const CPos& basePos) const override {
-        return value;
-    }
+    explicit ASTValueNode(const CValue& val) : value(val) {}
+    CValue evaluate() const override { return value; }
 };
 
-class CellRefNode : public ASTTree {
-    CPos position;
-public:
-    CellRefNode(const CPos& pos) : position(pos) {}
-    CValue evaluate(map<CPos, CValue>& cells, const CPos& basePos) const override {
-        auto it = cells.find(position);
-        return (it != cells.end()) ? it->second : CValue(monostate());
-    }
+// Binary operations types
+enum class BinaryOpType {
+    Add, Subtract, Multiply, Divide, Power
 };
 
-class BinaryOpNode : public ASTTree {
-    ASTTree* left;
-    ASTTree* right;
-    function<double(double, double)> op;
-public:
-    BinaryOpNode(ASTTree* l, ASTTree* r, function<double(double, double)> func) : left(l), right(r), op(func) {}
-    ~BinaryOpNode() {
-        delete left;
-        delete right;
+// Function to apply a binary operation
+CValue applyBinaryOp(const CValue& left, const CValue& right, BinaryOpType op) {
+    if (left.index() == 1 && right.index() == 1) { // both are numbers
+        double leftNum = get<double>(left);
+        double rightNum = get<double>(right);
+        switch (op) {
+            case BinaryOpType::Add:      return leftNum + rightNum;
+            case BinaryOpType::Subtract: return leftNum - rightNum;
+            case BinaryOpType::Multiply: return leftNum * rightNum;
+            case BinaryOpType::Divide:   return rightNum != 0 ? leftNum / rightNum : CValue();
+            case BinaryOpType::Power:    return pow(leftNum, rightNum);
+            default:                     return CValue();
+        }
     }
-    CValue evaluate(map<CPos, CValue>& cells, const CPos& basePos) const override {
-        auto lVal = get<double>(left->evaluate(cells, basePos));
-        auto rVal = get<double>(right->evaluate(cells, basePos));
-        return op(lVal, rVal);
+    return CValue(); // One of the operands is not a number, or unsupported operation
+}
+
+// AST node for binary operations
+class ASTBinaryNode : public ASTNode {
+    ASTNodePtr left;
+    ASTNodePtr right;
+    BinaryOpType opType;
+public:
+    ASTBinaryNode(ASTNodePtr l, ASTNodePtr r, BinaryOpType op)
+            : left(move(l)), right(move(r)), opType(op) {}
+    CValue evaluate() const override {
+        CValue leftVal = left->evaluate();
+        CValue rightVal = right->evaluate();
+        return applyBinaryOp(leftVal, rightVal, opType);
+    }
+};
+int columnToIndex(const std::string& column) {
+    int index = 0;
+    int multiplier = 1;
+    for (int i = column.length() - 1; i >= 0; i--) {
+        char c = toupper(column[i]);
+        index += (c - 'A' + 1) * multiplier;
+        multiplier *= 26;
+    }
+    return index - 1; // zero-based index
+}
+class CSpreadsheet;
+class ASTReferenceNode : public ASTNode {
+private:
+    std::string reference; // Textual representation of the cell reference, e.g., "A1", "$A1", "A$1", "$A$1"
+    CSpreadsheet* spreadsheet; // Pointer to the spreadsheet instance
+
+public:
+    ASTReferenceNode(const std::string& ref, CSpreadsheet* ss) : reference(ref), spreadsheet(ss) {}
+
+    CValue evaluate() const override {
+        if (!spreadsheet) {
+            throw std::runtime_error("Spreadsheet pointer is null in ASTReferenceNode.");
+        }
+
+        bool absoluteColumn = false;
+        bool absoluteRow = false;
+        std::string colStr;
+        std::string rowStr;
+
+        int i = 0;
+
+        // Process column part
+        if (reference[i] == '$') {
+            absoluteColumn = true;
+            i++;
+        }
+        while (i < reference.size() && std::isalpha(reference[i])) {
+            colStr += reference[i++];
+        }
+
+        // Process row part
+        if (i < reference.size() && reference[i] == '$') {
+            absoluteRow = true;
+            i++;
+        }
+        while (i < reference.size() && std::isdigit(reference[i])) {
+            rowStr += reference[i++];
+        }
+
+        int col = columnToIndex(colStr);
+        int row = std::stoi(rowStr) - 1; // Assuming rowStr is 1-based index
+
+        // Assuming you have a method to get the current cell's position
+        CPos currentCellPos = /* The current cell position */;
+
+        if (!absoluteColumn) {
+            col += currentCellPos.getColumn();
+        }
+        if (!absoluteRow) {
+            row += currentCellPos.getRow();
+        }
+
+        return spreadsheet->getValueAt(col, row);
     }
 };
 class SimpleExpressionEvaluator : public CExprBuilder  {
 private:
 
-    map<CPos, CValue>& cells;
+    map<CPos, CValue> cells;
     CPos basePos;
 public:
+    stack<ASTNodePtr> nodeStack;
     stack<CValue> evalStack;
+    SimpleExpressionEvaluator(){
+
+    };
     SimpleExpressionEvaluator(map<CPos, CValue>& cells) : cells(cells) {}
     void opAdd() override {
         cerr << "Trying to add. Stack size: " << evalStack.size() << endl;
@@ -107,25 +187,33 @@ public:
             cerr << "Insufficient values for addition" << endl;
             throw runtime_error("Insufficient values for addition");
         }
-        auto right = evalStack.top(); evalStack.pop();
-        auto left = evalStack.top(); evalStack.pop();
-        double result = get<double>(left) + get<double>(right);
-        evalStack.push(result);
+        auto right = nodeStack.top(); nodeStack.pop();
+        auto left = nodeStack.top(); nodeStack.pop();
+        nodeStack.push(make_shared<ASTBinaryNode>(left, right, BinaryOpType::Add));
         //cerr << "Added: " << left << " + " << right << " = " << result << endl;
 
 
     }
 
     void opSub() override {
-        if (evalStack.size() < 2) throw runtime_error("Insufficient values for subtraction");
-        auto right = evalStack.top(); evalStack.pop();
-        auto left = evalStack.top(); evalStack.pop();
-        evalStack.push(get<double>(left) - get<double>(right));
+        cerr << "Trying to add. Stack size: " << evalStack.size() << endl;
+        if (evalStack.size() < 2) {
+            cerr << "Insufficient values for addition" << endl;
+            throw runtime_error("Insufficient values for addition");
+        }
+        auto right = nodeStack.top(); nodeStack.pop();
+        auto left = nodeStack.top(); nodeStack.pop();
+        nodeStack.push(make_shared<ASTBinaryNode>(left, right, BinaryOpType::Subtract));
     }
     void opMul() override {
-        auto a = evalStack.top(); evalStack.pop();
-        auto b = evalStack.top(); evalStack.pop();
-        evalStack.push(get<double>(a) * get<double>(b));
+        cerr << "Trying to add. Stack size: " << evalStack.size() << endl;
+        if (evalStack.size() < 2) {
+            cerr << "Insufficient values for addition" << endl;
+            throw runtime_error("Insufficient values for addition");
+        }
+        auto right = nodeStack.top(); nodeStack.pop();
+        auto left = nodeStack.top(); nodeStack.pop();
+        nodeStack.push(make_shared<ASTBinaryNode>(left, right, BinaryOpType::Multiply));
     }
 
     void opDiv() override {
@@ -141,16 +229,11 @@ public:
         evalStack.push(pow(get<double>(b), get<double>(a)));
     }
     void valNumber(double num) override {
-        evalStack.push(num);
+        nodeStack.push(make_shared<ASTValueNode>(CValue(num)));
     }
     void  valReference  ( std::string                           val ) override {
 
-        CPos pos(val, basePos.row, basePos.col);
-        auto it = cells.find(pos);
-        if (it == cells.end() || !holds_alternative<double>(it->second)) {
-            throw std::runtime_error("Invalid reference or non-numeric cell referenced.");
-        }
-        evalStack.push(std::get<double>(it->second));
+        evalStack.push(make_shared<ASTReferenceNode>(ref));
         /*cerr << "Resolving reference for: " << val << endl;
         CPos pos(val);
         auto it = cells.find(pos);
@@ -244,8 +327,16 @@ public:
             throw runtime_error("Unsupported types for comparison");
         }
     }
+    ASTNodePtr getAST() {
+        if (nodeStack.size() != 1) throw runtime_error("Invalid expression.");
+        return nodeStack.top();
+    }
+
 };
 
+CValue evaluateAST(const ASTNodePtr& root) {
+    return root->evaluate();
+}
 
 class CSpreadsheet
 {
@@ -265,38 +356,65 @@ class CSpreadsheet
     }
     bool                               setCell                                 ( CPos                                  pos,
                                                                                  std::string                           contents ){
-        try {
-            if (contents[0] == '=') {
-                SimpleExpressionEvaluator builder(cells);
-                parseExpression(contents.substr(0), builder); // Correctly skipping the '=' for parsing
-                cells[pos] = builder.getResult();
-            } else {
-                try {
-                    double num = stod(contents);
-                    cells[pos] = num;
-                } catch (const std::invalid_argument&) {
-                    cells[pos] = contents;
-                }
-            }
+        if (contents.empty()) {
+            cells.erase(pos); // If the content is empty, remove the cell
             return true;
-        } catch (const std::exception& e) {
-            cerr << "Error setting cell " << pos.row << "," << pos.col << ": " << e.what() << endl;
-            return false;
         }
+
+        if (contents[0] == '=') {
+            // Expression
+            try {
+                auto astRoot = parseExpressionToAST(contents.substr(1));
+                CValue value = evaluateAST(astRoot);
+                cells[pos] = make_pair(value, astRoot);
+            } catch (const exception& e) {
+                cerr << "Error parsing expression: " << e.what() << endl;
+                return false;
+            }
+        } else {
+            // Direct value
+            try {
+                double num = stod(contents);
+                cells[pos] = make_pair(CValue(num), nullptr);
+            } catch (const invalid_argument&) {
+                // If it's not a number, store it as a string
+                cells[pos] = make_pair(CValue(contents), nullptr);
+            }
+        }
+        return true;
 
     }
     CValue                             getValue                                ( CPos                                  pos ){
         auto it = cells.find(pos);
         if (it != cells.end()) {
-            return it->second;
+            // If there's an AST, re-evaluate the expression
+            if (it->second.second != nullptr) {
+                try {
+                    it->second.first = evaluateAST(it->second.second);
+                } catch (const exception& e) {
+                    cerr << "Error evaluating AST: " << e.what() << endl;
+                    return CValue(); // Return an undefined value
+                }
+            }
+            return it->second.first;
         }
-        return monostate();
+        return CValue();
     }
     void                               copyRect                                ( CPos                                  dst,
                                                                                  CPos                                  src,
                                                                                  int                                   w = 1,
                                                                                  int                                   h = 1 ){
 
+    }
+    CValue evaluateAST(const ASTNodePtr& root) {
+        return root->evaluate();
+    }
+
+// Dummy parseExpressionToAST function that needs to be replaced with actual parsing logic
+    ASTNodePtr parseExpressionToAST(const string& expr) {
+        SimpleExpressionEvaluator builder;
+        parseExpression(expr, builder); // This function is provided by your parser library
+        return builder.getAST();
     }
     string unescapeString(const string& input) {
         string output;
@@ -325,7 +443,7 @@ class CSpreadsheet
 
         return output;
     }
-    map<CPos, CValue> cells;
+    map<CPos, pair<CValue, ASTNodePtr>> cells;
   private:
     // todo
 };
