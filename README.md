@@ -1,5 +1,4 @@
-# FITExcel
-# Spreadsheet Backend Simulator
+# Spreadsheet Backend Simulator (FITExcel)
 
 ## Overview
 
